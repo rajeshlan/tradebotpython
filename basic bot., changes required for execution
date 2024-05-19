@@ -1,0 +1,126 @@
+import time
+from pybit.unified_trading import HTTP
+
+# Initialize Bybit client for derivatives
+api_key = 'API'
+api_secret = 'SECRET_KEY'
+client = HTTP(api_key=api_key, api_secret=api_secret, recv_window=5000)
+
+# Function to place a leverage order on derivatives
+def place_leverage_order(symbol, side, quantity, leverage):
+    try:
+        # Set leverage
+        client.set_leverage(symbol=symbol, buy_leverage=leverage, sell_leverage=leverage)
+        # Place order
+        order = client.place_active_order(
+            symbol=symbol,
+            side=side,
+            order_type="Market",
+            qty=quantity,
+            time_in_force="GoodTillCancel",
+            reduce_only=False,
+            close_on_trigger=False
+        )
+        print("Order placed successfully:", order)
+    except Exception as e:
+        print("Error placing order:", e)
+
+# Function to close any open position on derivatives
+def close_open_position(symbol):
+    try:
+        positions = client.my_position(symbol=symbol)['result']
+        for pos in positions:
+            if pos['size'] > 0:
+                side = 'Sell' if pos['side'] == 'Buy' else 'Buy'
+                client.place_active_order(
+                    symbol=symbol,
+                    side=side,
+                    order_type="Market",
+                    qty=pos['size'],
+                    time_in_force="GoodTillCancel",
+                    reduce_only=True,
+                    close_on_trigger=False
+                )
+                print("Closed open position.")
+                break
+    except Exception as e:
+        print("Error closing position:", e)
+
+# Function to get the current USDT balance from derivatives account
+def get_usdt_balance():
+    try:
+        wallet_balance_response = client.get_wallet_balance(accountType="CONTRACT")
+        print("Wallet balance response:", wallet_balance_response)  # Debug print
+        coins = wallet_balance_response['result']['list'][0]['coin']
+        
+        usdt_balance = 0.0
+        for coin in coins:
+            if coin['coin'] == 'USDT':
+                usdt_balance = float(coin['availableBalance'])
+                break
+        
+        print("USDT balance:", usdt_balance)  # Debug print
+        return usdt_balance
+    except Exception as e:
+        print("Error getting balance:", e)
+        return 0.0
+
+# Main function to execute margin trading logic
+def execute_margin_trades():
+    symbol = 'BTCUSDT'  # Example trading pair, replace with your desired pair
+    fast_length = 10
+    slow_length = 20
+    leverage = 100  # Max leverage
+
+    # Get current USDT balance
+    usdt_balance = get_usdt_balance()
+    if usdt_balance == 0.0:
+        print("Error: USDT balance is zero or could not be retrieved.")
+        return
+
+    # Get latest market price for the symbol
+    try:
+        ticker_response = client.get_tickers(category="linear", symbol=symbol)
+        print("Ticker response:", ticker_response)  # Debug print
+        ticker_info = ticker_response['result'][0]
+        btc_price = float(ticker_info['lastPrice'])
+    except Exception as e:
+        print("Error retrieving ticker information:", e)
+        return
+
+    trade_amount = usdt_balance * 0.1  # Allocate 10% of USDT balance for each trade
+
+    # Close any open position before proceeding
+    close_open_position(symbol)
+
+    # Get current market data
+    try:
+        candles_response = client.query_kline(category="linear", symbol=symbol, interval="1", limit=max(fast_length, slow_length))
+        print("Candles response:", candles_response)  # Debug print
+        close_prices = [float(candle['close']) for candle in candles_response['result']]
+    except Exception as e:
+        print("Error retrieving market data:", e)
+        return
+
+    # Calculate moving averages
+    fast_ma = sum(close_prices[-fast_length:]) / fast_length
+    slow_ma = sum(close_prices[-slow_length:]) / slow_length
+
+    # Check for long signal
+    if fast_ma > slow_ma:
+        # Place buy order
+        if trade_amount > 0:
+            place_leverage_order(symbol, "Buy", trade_amount / btc_price, leverage)
+        else:
+            print("Insufficient USDT balance.")
+
+    # Check for short signal
+    elif fast_ma < slow_ma:
+        # Place sell order
+        if trade_amount > 0:
+            place_leverage_order(symbol, "Sell", trade_amount / btc_price, leverage)
+        else:
+            print("Insufficient USDT balance.")
+
+# Execute the margin trading logic
+execute_margin_trades()
